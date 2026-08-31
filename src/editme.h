@@ -13,6 +13,7 @@ static EFI_GUID SMBIOS_SYS_UUID =
 };
 
 
-static const char* SMBIOS_MEM_SERIAL = "31632123";
+// 8 character
+static const char* SMBIOS_MEM_SERIAL = "FCC1A2B3";
 
 #endif

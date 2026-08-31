@@ -22,11 +22,11 @@ VOID PatchType1(SMBIOS_STRUCTURE_TABLE* entry)
     SMBIOS_STRUCTURE_POINTER table =
         FindTableByType(entry, SMBIOS_TYPE_SYSTEM_INFORMATION, 0);
 
-    Print(L"[WORK] Patching type1 table at 0x%08x...\n", table.Raw);
+    Print(L"[WORK] Patching type1 table at 0x%08x...\r\n", table.Raw);
 
     if (!table.Type1)
     {
-        Print(L"[FAIL] Table type1 is non existent\n");
+        Print(L"[FAIL] Table type1 is non existent\r\n");
         return;
     }
 
@@ -36,7 +36,7 @@ VOID PatchType1(SMBIOS_STRUCTURE_TABLE* entry)
         sizeof(EFI_GUID)
     );
 
-    Print(L"[INFO] Patched type1 table (Serial + UUID)\n");
+    Print(L"[INFO] Patched type1 table (Serial + UUID)\r\n");
 }
 
 
@@ -53,7 +53,7 @@ VOID PatchType17(SMBIOS_STRUCTURE_TABLE* entry)
         {
             if (index == 0)
             {
-                Print(L"[FAIL] Table type17 is non existent\n");
+                Print(L"[FAIL] Table type17 is non existent\r\n");
             }
             break;
         }
@@ -62,11 +62,11 @@ VOID PatchType17(SMBIOS_STRUCTURE_TABLE* entry)
 
         if (*memSize == 0) 
         {
-            Print(L"[INFO] Slot %d is empty (Size is 0), skipping...\n", index);
+            Print(L"[INFO] Slot %d is empty (Size is 0), skipping...\r\n", index);
             continue; 
         }
 
-        Print(L"[WORK] Patching type17 table at 0x%08x (index %d)...\n", table.Raw, index);
+        Print(L"[WORK] Patching type17 table at 0x%08x (index %d)...\r\n", table.Raw, index);
 
         if (table.Hdr->Length > 0x18)
         {
@@ -78,9 +78,9 @@ VOID PatchType17(SMBIOS_STRUCTURE_TABLE* entry)
                 SMBIOS_MEM_SERIAL
             );
 
-            Print(L"[INFO] Patched type17 table (index %d)\n", index);
+            Print(L"[INFO] Patched type17 table (index %d)\r\n", index);
         } else {
-            Print(L"[WARN] Type17 table length too small, skipping (index %d)\n", index);
+            Print(L"[WARN] Type17 table length too small, skipping (index %d)\r\n", index);
         }
     }
 }

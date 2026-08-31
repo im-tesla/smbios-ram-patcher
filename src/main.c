@@ -7,18 +7,18 @@ EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable)
 {
     InitializeLib(ImageHandle, SystemTable);
     
-    Print(L"[tesla] Searching for SMBIOS table entry...\n");
+    Print(L"[tesla] Searching for SMBIOS table entry...\r\n");
     SMBIOS_STRUCTURE_TABLE* smbiosEntry = FindEntry();
     if (!smbiosEntry) 
     {
-        Print(L"[FAIL] Failed to locate SMBIOS table entry\n");
+        Print(L"[FAIL] Failed to locate SMBIOS table entry\r\n");
         return EFI_NOT_FOUND;
     }
-    Print(L"[tesla] SMBIOS table entry found on 0x%08x\n", smbiosEntry->TableAddress);  
+    Print(L"[tesla] SMBIOS table entry found on 0x%08x\r\n", smbiosEntry->TableAddress);  
 
     PatchAll(smbiosEntry);
 
-    Print(L"[tesla] SMBIOS patched succesfully");
+    Print(L"[tesla] SMBIOS patched succesfully\r\n");
 
     return EFI_SUCCESS;
 }

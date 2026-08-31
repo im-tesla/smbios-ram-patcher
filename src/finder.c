@@ -92,13 +92,13 @@ SMBIOS_STRUCTURE_TABLE* FindEntry()
 
     address = FindByConfig();
     if (address) {
-        Print(L"[tesla] SMBIOS found by Config");
+        Print(L"[tesla] SMBIOS found by Config\r\n");
         return address;
     }
 
     address = FindByHob();
     if (address) {
-        Print(L"[tesla] SMBIOS found by Hob (spoofing may not be succesful)");
+        Print(L"[tesla] SMBIOS found by Hob (spoofing may not be succesful)\r\n");
         return address;
     }
          

@@ -42,8 +42,10 @@ SMBIOS_STRUCTURE_POINTER FindTableByType(SMBIOS_STRUCTURE_TABLE* entry, UINT8 ty
 
 UINTN SpaceLength(const char* text, UINTN maxLength) 
 {
+    if (!text)
+        return 0;
+
     UINTN lenght = 0;
-    const char* ba;
 
     if (maxLength > 0) 
     {
@@ -55,16 +57,21 @@ UINTN SpaceLength(const char* text, UINTN maxLength)
             }
         }
 
-        ba = &text[lenght - 1];
+        if (lenght == 0)
+            return 0;
+
+        const char* ba = &text[lenght - 1];
 
         while ((lenght != 0) && ((*ba == ' ') || (*ba == 0))) 
         {
-            ba--; lenght--;
+            ba--; 
+            lenght--;
         }
-    } else 
+    } 
+    else 
     {
-        ba = text;
-        while(*ba)
+        const char* ba = text;
+        while (*ba)
         {
             ba++; 
             lenght++;
@@ -78,6 +85,12 @@ void EditString(SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field, const char
 {
     if (!table.Raw || !buffer || !field)
         return;
+
+    if (*field == 0)
+    {
+        Print(L"[WARN] String index is 0 (no existing string to overwrite in-place)\r\n");
+        return;
+    }
 
     UINT8 index = 1;
     char *astr = (char *)(table.Raw + table.Hdr->Length);
@@ -94,29 +107,33 @@ void EditString(SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field, const char
 
         if (*astr == 0)
         {
-            if (*field == 0) 
-            {
-                astr[1] = 0;
-            }
-
-            *field = index;
-
-            if (index == 1) 
-            {
-                astr--;
-            }
-            break;
+            Print(L"[FAIL] String index %d not found in table\r\n", *field);
+            return;
         }
     }
 
     UINTN astrLength = SpaceLength(astr, 0);
     UINTN bstrLength = SpaceLength(buffer, 256);
 
-    if (bstrLength < astrLength) 
+    if (astrLength == 0)
     {
-        Print(L"[FAIL] Input string too short\n");
+        Print(L"[WARN] Existing string length is 0\r\n");
         return;
     }
-    
-    CopyMem(astr, (void *)buffer, astrLength); 
+
+    if (bstrLength <= astrLength)
+    {
+        CopyMem(astr, (void *)buffer, bstrLength);
+        for (UINTN i = bstrLength; i < astrLength; i++)
+        {
+            astr[i] = ' ';
+        }
+        astr[astrLength] = '\0';
+    }
+    else
+    {
+        CopyMem(astr, (void *)buffer, astrLength);
+        astr[astrLength] = '\0';
+        Print(L"[WARN] Replacement string truncated to %d chars (in-place limit)\r\n", astrLength);
+    }
 }

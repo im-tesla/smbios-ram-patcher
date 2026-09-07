@@ -5,214 +5,378 @@
 #include "editme.h"
 #include "log.h"
 
-BOOLEAN PatchType1(SMBIOS_CONTEXT* ctx)
+#define SERIAL_BUF_SIZE 64
+
+static BOOLEAN AsciiEqualsIgnoreCase(const char* a, const char* b)
 {
-    if (!ctx || !ctx->TableAddress)
-    {
-        LOG_ERROR(L"Invalid context provided to PatchType1\r\n");
+    if (a == NULL || b == NULL)
         return FALSE;
+
+    for (UINTN i = 0;; i++)
+    {
+        char ca = a[i];
+        char cb = b[i];
+
+        if (ca >= 'a' && ca <= 'z') ca = (char)(ca - 'a' + 'A');
+        if (cb >= 'a' && cb <= 'z') cb = (char)(cb - 'a' + 'A');
+
+        if (ca != cb)
+            return FALSE;
+        if (ca == '\0')
+            return TRUE;
+    }
+}
+
+// Copies `src` into `dst`, optionally appending a decimal suffix.
+static VOID BuildSerial(char* dst, UINTN dstSize, const char* src, BOOLEAN appendIndex, UINTN index)
+{
+    UINTN n = 0;
+
+    while (src[n] != '\0' && n + 1 < dstSize)
+    {
+        dst[n] = src[n];
+        n++;
     }
 
-    SMBIOS_STRUCTURE_POINTER table =
-        FindTableByType(ctx, SMBIOS_TYPE_SYSTEM_INFORMATION, 0);
+    if (appendIndex)
+    {
+        char digits[16];
+        UINTN d = 0;
+
+        if (index == 0)
+        {
+            digits[d++] = '0';
+        }
+        else
+        {
+            while (index > 0 && d < sizeof(digits))
+            {
+                digits[d++] = (char)('0' + (index % 10));
+                index /= 10;
+            }
+        }
+
+        while (d > 0 && n + 1 < dstSize)
+            dst[n++] = digits[--d];
+    }
+
+    dst[n] = '\0';
+}
+
+// Resolves the configured serial into `buf`.
+// Returns TRUE when a string should be written (buf holds it), FALSE when the
+// serial should be removed instead.
+static BOOLEAN ResolveSerial(const char* configured, char* buf, UINTN bufSize,
+                             BOOLEAN appendIndex, UINTN index)
+{
+    if (configured == NULL)
+        return FALSE;
+
+    if (AsciiEqualsIgnoreCase(configured, "RANDOM"))
+    {
+        RandomText(buf, 8);
+        return TRUE;
+    }
+
+    BuildSerial(buf, bufSize, configured, appendIndex, index);
+    return (buf[0] != '\0');
+}
+
+static VOID LogUuid(LOG_LEVEL level, CONST CHAR16* label, CONST UINT8* raw)
+{
+    // Read byte-wise: SMBIOS structures are not aligned.
+    LogPrint(level,
+             L"%s%02x%02x%02x%02x-%02x%02x-%02x%02x-%02x%02x-%02x%02x%02x%02x%02x%02x\n",
+             label,
+             raw[3], raw[2], raw[1], raw[0],
+             raw[5], raw[4],
+             raw[7], raw[6],
+             raw[8], raw[9],
+             raw[10], raw[11], raw[12], raw[13], raw[14], raw[15]);
+}
+
+// ---------------------------------------------------------------------------
+// Type 1 - System Information
+// ---------------------------------------------------------------------------
+
+BOOLEAN PatchType1(SMBIOS_CONTEXT* ctx, PATCH_STATS* stats)
+{
+    SMBIOS_STRUCTURE_POINTER table = FindTableByType(ctx, SMBIOS_TYPE_SYSTEM_INFORMATION, 0);
 
     if (!table.Raw)
     {
-        LOG_ERROR(L"Type 1 (System Information) table not found\r\n");
+        LOG_WARN(L"No Type 1 (System Information) structure in this table\n");
         return FALSE;
     }
 
-    LOG_INFO(L"Found Type 1 (System Information) at 0x%lx (Length: %u)\r\n",
-             (UINT64)(UINTN)table.Raw, table.Hdr->Length);
+    LOG_INFO(L"Type 1 (System Information) at 0x%lx, handle 0x%04x, header %u bytes\n",
+             (UINT64)(UINTN)table.Raw, SmbiosGetHandle(table), table.Hdr->Length);
 
-    BOOLEAN uuidPatched = FALSE;
-    if (table.Hdr->Length >= 0x18)
+    CHAR8 buf[128];
+
+    if (table.Hdr->Length > SMBIOS_T1_MANUFACTURER &&
+        SmbiosGetString(table, table.Raw[SMBIOS_T1_MANUFACTURER], buf, sizeof(buf)))
+        LOG_DEBUG(L"  Manufacturer: \"%a\"\n", buf);
+
+    if (table.Hdr->Length > SMBIOS_T1_PRODUCT_NAME &&
+        SmbiosGetString(table, table.Raw[SMBIOS_T1_PRODUCT_NAME], buf, sizeof(buf)))
+        LOG_DEBUG(L"  Product name: \"%a\"\n", buf);
+
+    BOOLEAN changed = FALSE;
+
+    // --- UUID (offset 0x08, 16 bytes) ---
+    if (!PATCH_SYS_UUID)
     {
-        EFI_GUID* uuidField = (EFI_GUID*)(table.Raw + 0x08);
+        LOG_DEBUG(L"  UUID patching disabled (PATCH_SYS_UUID = 0)\n");
+    }
+    else if (table.Hdr->Length >= SMBIOS_T1_UUID + 16)
+    {
+        UINT8* uuidField = table.Raw + SMBIOS_T1_UUID;
+
+        LogUuid(LOG_LEVEL_DEBUG, L"  Current UUID: ", uuidField);
+
         CopyMem(uuidField, &SMBIOS_SYS_UUID, sizeof(EFI_GUID));
-        LOG_SUCCESS(L"  Patched Type 1 System UUID\r\n");
-        uuidPatched = TRUE;
+
+        LogUuid(LOG_LEVEL_SUCCESS, L"  Patched UUID: ", uuidField);
+        changed = TRUE;
     }
     else
     {
-        LOG_WARN(L"  Type 1 table too short for UUID (%u < 0x18)\r\n", table.Hdr->Length);
+        LOG_WARN(L"  Type 1 header is only %u bytes, too short to hold a UUID\n",
+                 table.Hdr->Length);
+        if (stats) stats->Failures++;
     }
 
-#ifdef SMBIOS_SYS_SERIAL
-    if (table.Hdr->Length > 0x07)
+    // --- Serial number (offset 0x07, string index) ---
+    if (!PATCH_SYS_SERIAL)
     {
-        SMBIOS_STRING* serialField = (SMBIOS_STRING*)(table.Raw + 0x07);
-        CHAR8 currentSerial[128];
-        if (SmbiosGetString(table, *serialField, currentSerial, sizeof(currentSerial)))
+        LOG_DEBUG(L"  System serial patching disabled (PATCH_SYS_SERIAL = 0)\n");
+    }
+    else if (table.Hdr->Length > SMBIOS_T1_SERIAL)
+    {
+        SMBIOS_STRING* serialField = (SMBIOS_STRING*)(table.Raw + SMBIOS_T1_SERIAL);
+
+        if (SmbiosGetString(table, *serialField, buf, sizeof(buf)))
+            LOG_DEBUG(L"  Current system serial: \"%a\" (string %u)\n", buf, *serialField);
+        else
+            LOG_DEBUG(L"  Current system serial: none\n");
+
+        char serial[SERIAL_BUF_SIZE];
+        BOOLEAN write = ResolveSerial(SMBIOS_SYS_SERIAL, serial, sizeof(serial), FALSE, 0);
+
+        if (SmbiosSetString(ctx, table, serialField, write ? serial : NULL))
         {
-            LOG_INFO(L"  Current System Serial (index %u): \"%a\"\r\n", (UINT32)*serialField, currentSerial);
+            if (!write)
+            {
+                LOG_SUCCESS(L"  Removed the system serial string\n");
+            }
+            else
+            {
+                table = FindTableByType(ctx, SMBIOS_TYPE_SYSTEM_INFORMATION, 0);
+                serialField = (SMBIOS_STRING*)(table.Raw + SMBIOS_T1_SERIAL);
+                SmbiosGetString(table, *serialField, buf, sizeof(buf));
+                LOG_SUCCESS(L"  Patched system serial: \"%a\" (string %u)\n", buf, *serialField);
+            }
+            changed = TRUE;
         }
         else
         {
-            LOG_INFO(L"  Current System Serial (index %u): [None / Empty]\r\n", (UINT32)*serialField);
-        }
-
-        if (SMBIOS_SYS_SERIAL == NULL)
-        {
-            if (SmbiosSetString(ctx, table, serialField, NULL))
-            {
-                LOG_SUCCESS(L"  Set Type 1 System Serial to NULL (index 0, string removed)\r\n");
-            }
-            else
-            {
-                LOG_ERROR(L"  Failed to set Type 1 System Serial to NULL\r\n");
-            }
-        }
-        else if (((const char*)SMBIOS_SYS_SERIAL)[0] != '\0')
-        {
-            if (SmbiosSetString(ctx, table, serialField, SMBIOS_SYS_SERIAL))
-            {
-                table = FindTableByType(ctx, SMBIOS_TYPE_SYSTEM_INFORMATION, 0);
-                if (table.Raw != NULL && table.Hdr->Length > 0x07)
-                {
-                    serialField = (SMBIOS_STRING*)(table.Raw + 0x07);
-                    CHAR8 verifySerial[128];
-                    if (SmbiosGetString(table, *serialField, verifySerial, sizeof(verifySerial)))
-                    {
-                        LOG_SUCCESS(L"  Patched Type 1 System Serial (index %u): \"%a\"\r\n", (UINT32)*serialField, verifySerial);
-                    }
-                    else
-                    {
-                        LOG_SUCCESS(L"  Patched Type 1 System Serial (index %u)\r\n", (UINT32)*serialField);
-                    }
-                }
-            }
-            else
-            {
-                LOG_ERROR(L"  Failed to patch Type 1 System Serial\r\n");
-            }
+            LOG_ERROR(L"  Failed to patch the system serial\n");
+            if (stats) stats->Failures++;
         }
     }
-#endif
 
-    return uuidPatched;
+    if (changed && stats)
+        stats->Type1Patched++;
+
+    return changed;
 }
 
-UINTN PatchType17(SMBIOS_CONTEXT* ctx)
+// ---------------------------------------------------------------------------
+// Type 17 - Memory Device
+// ---------------------------------------------------------------------------
+
+static UINT64 MemoryDeviceSizeMb(SMBIOS_STRUCTURE_POINTER table)
 {
-    if (!ctx || !ctx->TableAddress)
-    {
-        LOG_ERROR(L"Invalid context provided to PatchType17\r\n");
-        return 0;
-    }
+    UINT16 size = 0;
+    UINT32 extSize = 0;
 
-    if (SMBIOS_MEM_SERIAL != NULL && SMBIOS_MEM_SERIAL[0] == '\0')
-    {
-        LOG_WARN(L"SMBIOS_MEM_SERIAL is empty, skipping Type 17 patching\r\n");
-        return 0;
-    }
+    if (table.Hdr->Length >= SMBIOS_T17_SIZE + 2)
+        CopyMem(&size, table.Raw + SMBIOS_T17_SIZE, sizeof(size));
 
-    UINTN patchedCount = 0;
-    UINTN emptySlotCount = 0;
+    if (table.Hdr->Length >= SMBIOS_T17_EXTENDED_SIZE + 4)
+        CopyMem(&extSize, table.Raw + SMBIOS_T17_EXTENDED_SIZE, sizeof(extSize));
+
+    if (size == 0xFFFF)
+        return 0;                       // unknown
+
+    if (size == 0x7FFF)
+        return extSize;                 // size lives in the extended field
+
+    if (size == 0)
+        return extSize;                 // slot not populated
+
+    // Bit 15 clear = megabytes, set = kilobytes.
+    if ((size & 0x8000) != 0)
+        return (UINT64)(size & 0x7FFF) / 1024;
+
+    return size;
+}
+
+BOOLEAN PatchType17(SMBIOS_CONTEXT* ctx, PATCH_STATS* stats)
+{
+    UINTN patched = 0;
     UINTN index = 0;
+    BOOLEAN sawAny = FALSE;
+
+    if (!PATCH_MEM_SERIAL)
+    {
+        LOG_DEBUG(L"Memory serial patching disabled (PATCH_MEM_SERIAL = 0)\n");
+        return FALSE;
+    }
 
     for (;; index++)
     {
-        SMBIOS_STRUCTURE_POINTER table =
-            FindTableByType(ctx, SMBIOS_TYPE_MEMORY_DEVICE, index);
+        SMBIOS_STRUCTURE_POINTER table = FindTableByType(ctx, SMBIOS_TYPE_MEMORY_DEVICE, index);
 
         if (!table.Raw)
-        {
-            if (index == 0)
-            {
-                LOG_ERROR(L"No Type 17 (Memory Device) tables found\r\n");
-            }
             break;
-        }
 
-        // Offset 0x0C: Size (UINT16). 0 indicates unpopulated socket.
-        UINT16 memSize = *(UINT16*)(table.Raw + 0x0C);
-        if (memSize == 0)
+        sawAny = TRUE;
+
+        if (table.Hdr->Length <= SMBIOS_T17_SERIAL)
         {
-            LOG_INFO(L"Memory Slot #%u is empty (Size is 0), skipping\r\n", index);
-            emptySlotCount++;
+            LOG_WARN(L"  Slot #%u: header is only %u bytes, no serial field to patch\n",
+                     (UINT32)index, table.Hdr->Length);
+            if (stats) stats->Type17Skipped++;
             continue;
         }
 
-        LOG_INFO(L"Processing Memory Device #%u at 0x%lx (Length: %u)...\r\n",
-                 index, (UINT64)(UINTN)table.Raw, table.Hdr->Length);
+        UINT16 speed = 0;
+        if (table.Hdr->Length >= SMBIOS_T17_SPEED + 2)
+            CopyMem(&speed, table.Raw + SMBIOS_T17_SPEED, sizeof(speed));
 
-        // Serial Number string index is at offset 0x18
-        if (table.Hdr->Length <= 0x18)
+        UINT64 sizeMb = MemoryDeviceSizeMb(table);
+
+        CHAR8 locator[64] = { 0 };
+        CHAR8 bank[64] = { 0 };
+        CHAR8 mfg[64] = { 0 };
+        CHAR8 part[64] = { 0 };
+        CHAR8 serial[128] = { 0 };
+
+        if (table.Hdr->Length > SMBIOS_T17_DEVICE_LOCATOR)
+            SmbiosGetString(table, table.Raw[SMBIOS_T17_DEVICE_LOCATOR], locator, sizeof(locator));
+        if (table.Hdr->Length > SMBIOS_T17_BANK_LOCATOR)
+            SmbiosGetString(table, table.Raw[SMBIOS_T17_BANK_LOCATOR], bank, sizeof(bank));
+        if (table.Hdr->Length > SMBIOS_T17_MANUFACTURER)
+            SmbiosGetString(table, table.Raw[SMBIOS_T17_MANUFACTURER], mfg, sizeof(mfg));
+        if (table.Hdr->Length > SMBIOS_T17_PART_NUMBER)
+            SmbiosGetString(table, table.Raw[SMBIOS_T17_PART_NUMBER], part, sizeof(part));
+
+        SMBIOS_STRING* serialField = (SMBIOS_STRING*)(table.Raw + SMBIOS_T17_SERIAL);
+        BOOLEAN hasSerial = SmbiosGetString(table, *serialField, serial, sizeof(serial));
+
+        LOG_DEBUG(L"--- Memory device slot #%u (handle 0x%04x, header %u bytes) ---\n",
+                  (UINT32)index, SmbiosGetHandle(table), table.Hdr->Length);
+        LOG_DEBUG(L"  Locator \"%a\" / bank \"%a\"\n", locator, bank);
+        LOG_DEBUG(L"  Manufacturer \"%a\", part \"%a\"\n", mfg, part);
+        LOG_DEBUG(L"  Size %lu MB, speed %u MT/s, serial \"%a\"\n", sizeMb, speed, serial);
+
+        BOOLEAN populated = (sizeMb > 0) || (speed > 0) || (mfg[0] != '\0') || (part[0] != '\0');
+
+        if (!populated && !(hasSerial && serial[0] != '\0'))
         {
-            LOG_WARN(L"  Type 17 structure too small (%u <= 0x18), skipping slot #%u\r\n",
-                     table.Hdr->Length, index);
+            LOG_INFO(L"Slot #%u (\"%a\") is empty, leaving it alone\n", (UINT32)index, locator);
+            if (stats) stats->Type17Skipped++;
             continue;
         }
 
-        SMBIOS_STRING* serialField = (SMBIOS_STRING*)(table.Raw + 0x18);
+        char newSerial[SERIAL_BUF_SIZE];
+        BOOLEAN write = ResolveSerial(SMBIOS_MEM_SERIAL, newSerial, sizeof(newSerial),
+                                      SMBIOS_MEM_SERIAL_UNIQUE ? TRUE : FALSE, patched);
 
-        CHAR8 currentSerial[128];
-        if (SmbiosGetString(table, *serialField, currentSerial, sizeof(currentSerial)))
+        if (SmbiosSetString(ctx, table, serialField, write ? newSerial : NULL))
         {
-            LOG_INFO(L"  Current Serial (index %u): \"%a\"\r\n", (UINT32)*serialField, currentSerial);
-        }
-        else
-        {
-            LOG_INFO(L"  Current Serial (index %u): [None / Empty]\r\n", (UINT32)*serialField);
-        }
-
-        if (SmbiosSetString(ctx, table, serialField, SMBIOS_MEM_SERIAL))
-        {
-            if (SMBIOS_MEM_SERIAL == NULL)
+            if (!write)
             {
-                LOG_SUCCESS(L"  Set Serial to NULL (index 0, string removed)\r\n");
+                LOG_SUCCESS(L"Slot #%u (\"%a\"): serial string removed\n", (UINT32)index, locator);
             }
             else
             {
-                // Re-resolve table after potential memory shift/reallocation
+                // The table may have moved; re-resolve before reading back.
                 table = FindTableByType(ctx, SMBIOS_TYPE_MEMORY_DEVICE, index);
-                if (table.Raw != NULL && table.Hdr->Length > 0x18)
-                {
-                    serialField = (SMBIOS_STRING*)(table.Raw + 0x18);
-                    CHAR8 verifySerial[128];
-                    if (SmbiosGetString(table, *serialField, verifySerial, sizeof(verifySerial)))
-                    {
-                        LOG_SUCCESS(L"  Patched Serial (index %u): \"%a\"\r\n", (UINT32)*serialField, verifySerial);
-                    }
-                    else
-                    {
-                        LOG_SUCCESS(L"  Patched Serial (index %u)\r\n", (UINT32)*serialField);
-                    }
-                }
+                serialField = (SMBIOS_STRING*)(table.Raw + SMBIOS_T17_SERIAL);
+                SmbiosGetString(table, *serialField, serial, sizeof(serial));
+                LOG_SUCCESS(L"Slot #%u (\"%a\"): serial \"%a\" (string %u)\n",
+                            (UINT32)index, locator, serial, *serialField);
             }
-            patchedCount++;
+
+            patched++;
+            if (stats) stats->Type17Patched++;
         }
         else
         {
-            LOG_ERROR(L"  Failed to patch serial on slot #%u\r\n", index);
+            LOG_ERROR(L"Slot #%u (\"%a\"): failed to patch the serial\n", (UINT32)index, locator);
+            if (stats) stats->Failures++;
         }
     }
 
-    LOG_INFO(L"Type 17 summary: %u slot(s) patched, %u empty slot(s) skipped (total examined: %u)\r\n",
-             patchedCount, emptySlotCount, index);
+    if (!sawAny)
+        LOG_WARN(L"No Type 17 (Memory Device) structures in this table\n");
 
-    return patchedCount;
+    return (patched > 0);
 }
 
-BOOLEAN PatchAll(SMBIOS_CONTEXT* ctx)
+// ---------------------------------------------------------------------------
+
+BOOLEAN PatchOneContext(SMBIOS_CONTEXT* ctx, PATCH_STATS* stats)
 {
-    if (!ctx)
+    if (!ctx || !ctx->TableAddress)
         return FALSE;
 
-    BOOLEAN t1 = PatchType1(ctx);
-    UINTN t17 = PatchType17(ctx);
+    CONST CHAR16* version = L"unknown";
+    if (ctx->Version == SMBIOS_VERSION_3) version = L"3.x (64-bit)";
+    else if (ctx->Version == SMBIOS_VERSION_2) version = L"2.x (32-bit)";
+
+    LOG_INFO(L"Patching SMBIOS %s table at 0x%lx (%u bytes, %u structures)\n",
+             version, (UINT64)(UINTN)ctx->TableAddress, ctx->TableLength, ctx->NumStructures);
+
+    BOOLEAN t1 = PatchType1(ctx, stats);
+    BOOLEAN t17 = PatchType17(ctx, stats);
 
     SmbiosUpdateChecksums(ctx);
 
-    return t1 || (t17 > 0);
+    LOG_DEBUG(L"  Table now %u bytes at 0x%lx%s\n",
+              ctx->TableLength, (UINT64)(UINTN)ctx->TableAddress,
+              ctx->IsDynamicAlloc ? L" (relocated)" : L"");
+
+    if (ctx->EntryPoint3 != NULL)
+        LOG_DEBUG(L"  SMBIOS 3.x entry point 0x%lx checksum 0x%02x\n",
+                  (UINT64)(UINTN)ctx->EntryPoint3, ctx->EntryPoint3->EntryPointStructureChecksum);
+
+    if (ctx->EntryPoint2 != NULL)
+        LOG_DEBUG(L"  SMBIOS 2.x entry point 0x%lx checksums 0x%02x / 0x%02x\n",
+                  (UINT64)(UINTN)ctx->EntryPoint2,
+                  ctx->EntryPoint2->IntermediateChecksum,
+                  ctx->EntryPoint2->EntryPointStructureChecksum);
+
+    return t1 || t17;
 }
 
-UINTN GetLogPauseSeconds(VOID)
+BOOLEAN PatchAll(SMBIOS_CONTEXT_LIST* list, PATCH_STATS* stats)
 {
-#ifdef LOG_PAUSE_SECONDS
-    return LOG_PAUSE_SECONDS;
-#else
-    return 5;
-#endif
+    if (!list || list->Count == 0)
+        return FALSE;
+
+    BOOLEAN any = FALSE;
+
+    for (UINTN i = 0; i < list->Count; i++)
+    {
+        LOG_INFO(L"--- SMBIOS instance %u of %u ---\n", (UINT32)(i + 1), (UINT32)list->Count);
+
+        if (PatchOneContext(&list->Contexts[i], stats))
+            any = TRUE;
+    }
+
+    return any;
 }

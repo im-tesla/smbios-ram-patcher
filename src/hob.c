@@ -37,7 +37,13 @@ void* GetNextHob(UINT16 type, void* start)
         {
             return hob.Raw;
         }
-        
+
+        // A zero length would spin forever on a malformed list.
+        if (GET_HOB_LENGTH(hob) < sizeof(EFI_HOB_GENERIC_HEADER))
+        {
+            return NULL;
+        }
+
         hob.Raw = GET_NEXT_HOB(hob);
     }
 
@@ -63,6 +69,11 @@ void* GetNextGuidHob(EFI_GUID* guid, void* start)
         if (CompareMem(guid, &guidHob.Guid->Name, sizeof(EFI_GUID)) == 0)
         {
             break;
+        }
+
+        if (GET_HOB_LENGTH(guidHob) < sizeof(EFI_HOB_GENERIC_HEADER))
+        {
+            return NULL;
         }
 
         guidHob.Raw = GET_NEXT_HOB(guidHob);

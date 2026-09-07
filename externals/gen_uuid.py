@@ -10,7 +10,7 @@ def generate_efi_guid():
     data3 = int.from_bytes(b[6:8], byteorder="little")
     data4 = b[8:]
 
-    print("static EFI_GUID SMBIOS_SYS_UUID =")
+    print("static EFI_GUID SMBIOS_SYS_UUID UNUSED =")
     print("{")
     print(f"    0x{data1:08X},")
     print(f"    0x{data2:04X},")

@@ -2,8 +2,11 @@
 #define PATCH_H
 
 #include "general.h"
+#include "smbios.h"
 
-void PatchType0(SMBIOS_STRUCTURE_TABLE* entry);
-void PatchAll(SMBIOS_STRUCTURE_TABLE* entry);
+BOOLEAN PatchType1(SMBIOS_CONTEXT* ctx);
+UINTN PatchType17(SMBIOS_CONTEXT* ctx);
+BOOLEAN PatchAll(SMBIOS_CONTEXT* ctx);
+UINTN GetLogPauseSeconds(VOID);
 
 #endif

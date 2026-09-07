@@ -3,7 +3,7 @@
 
 #include "general.h"
 
-void* GetHobList();
+void* GetHobList(VOID);
 void* GetNextHob(UINT16 type, void* start);
 void* GetFirstHob(UINT16 type);
 void* GetNextGuidHob(EFI_GUID* guid, void* start);

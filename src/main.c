@@ -1,4 +1,5 @@
 #include "general.h"
+#include "log.h"
 #include "finder.h"
 #include "patch.h"
 #include "smbios.h"
@@ -6,19 +7,36 @@
 EFI_STATUS efi_main(EFI_HANDLE ImageHandle, EFI_SYSTEM_TABLE *SystemTable) 
 {
     InitializeLib(ImageHandle, SystemTable);
-    
-    Print(L"[tesla] Searching for SMBIOS table entry...\r\n");
-    SMBIOS_STRUCTURE_TABLE* smbiosEntry = FindEntry();
-    if (!smbiosEntry) 
+    LogInit();
+
+    LOG_INFO(L"=========================================\r\n");
+    LOG_INFO(L"      SMBIOS Table Patcher (HWID)        \r\n");
+    LOG_INFO(L"=========================================\r\n");
+
+    SMBIOS_CONTEXT ctx;
+    ZeroMem(&ctx, sizeof(ctx));
+
+    LOG_INFO(L"Searching for SMBIOS table entry point...\r\n");
+    if (!FindSmbios(&ctx)) 
     {
-        Print(L"[FAIL] Failed to locate SMBIOS table entry\r\n");
+        LOG_ERROR(L"Failed to locate SMBIOS table entry point\r\n");
+        LogWaitKeyOrTimeout(GetLogPauseSeconds());
         return EFI_NOT_FOUND;
     }
-    Print(L"[tesla] SMBIOS table entry found on 0x%08x\r\n", smbiosEntry->TableAddress);  
 
-    PatchAll(smbiosEntry);
+    LOG_INFO(L"Beginning SMBIOS table patching...\r\n");
+    BOOLEAN patchResult = PatchAll(&ctx);
 
-    Print(L"[tesla] SMBIOS patched succesfully\r\n");
+    if (patchResult)
+    {
+        LOG_SUCCESS(L"SMBIOS tables patched successfully!\r\n");
+    }
+    else
+    {
+        LOG_WARN(L"SMBIOS patching finished with warnings or no matching slots\r\n");
+    }
 
-    return EFI_SUCCESS;
+    LogWaitKeyOrTimeout(GetLogPauseSeconds());
+
+    return patchResult ? EFI_SUCCESS : EFI_DEVICE_ERROR;
 }

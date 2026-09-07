@@ -49,10 +49,50 @@
 #define SMBIOS_TYPE_TPM_DEVICE                           43
 #define SMBIOS_TYPE_PROCESSOR_ADDITIONAL_INFORMATION     44
 
-#define SMBIOS_TYPE_END_OF_TABLE     0x007F
+#define SMBIOS_TYPE_END_OF_TABLE                         0x7F
 
-UINT16 TableLenght(SMBIOS_STRUCTURE_POINTER table);
-SMBIOS_STRUCTURE_POINTER FindTableByType(SMBIOS_STRUCTURE_TABLE* entry, UINT8 type, UINTN index);
+#pragma pack(1)
+typedef struct {
+    UINT8   AnchorString[5];                // "_SM3_"
+    UINT8   EntryPointStructureChecksum;
+    UINT8   EntryPointLength;               // 0x18
+    UINT8   MajorVersion;
+    UINT8   MinorVersion;
+    UINT8   DocRev;
+    UINT8   EntryPointRevision;
+    UINT8   Reserved;
+    UINT32  TableMaximumSize;
+    UINT64  TableAddress;
+} SMBIOS_3_0_ENTRY_POINT;
+#pragma pack()
+
+typedef enum {
+    SMBIOS_VERSION_UNKNOWN = 0,
+    SMBIOS_VERSION_2,
+    SMBIOS_VERSION_3
+} SMBIOS_VERSION;
+
+typedef struct {
+    SMBIOS_VERSION Version;
+    VOID*          EntryPoint;       // Pointer to SMBIOS_STRUCTURE_TABLE or SMBIOS_3_0_ENTRY_POINT
+    UINT8*         TableAddress;     // Direct pointer to structure table in memory
+    UINT32         TableLength;      // Current active size of structure table in bytes
+    UINT32         TableMaxAlloc;    // Total memory allocated/available in page
+    UINT16         NumStructures;    // Number of structures (v2) or 0 (v3)
+    BOOLEAN        IsDynamicAlloc;   // True if table memory was reallocated
+} SMBIOS_CONTEXT;
+
+VOID SafeMoveMem(VOID* dest, CONST VOID* src, UINTN count);
+UINT32 TableLength(SMBIOS_STRUCTURE_POINTER table);
+UINT32 SmbiosGetTotalTableSize(UINT8* tableStart);
+SMBIOS_STRUCTURE_POINTER FindTableByType(SMBIOS_CONTEXT* ctx, UINT8 type, UINTN index);
+BOOLEAN SmbiosGetString(SMBIOS_STRUCTURE_POINTER table, UINT8 stringIndex, CHAR8* outBuffer, UINTN outBufferSize);
+BOOLEAN SmbiosEnsureCapacity(SMBIOS_CONTEXT* ctx, UINT32 requiredSize);
+VOID SmbiosUpdateChecksums(SMBIOS_CONTEXT* ctx);
+BOOLEAN SmbiosSetString(SMBIOS_CONTEXT* ctx, SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field, const char* newStr);
+BOOLEAN SmbiosRemoveString(SMBIOS_CONTEXT* ctx, SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field);
+
+// Backwards compatibility functions
 UINTN SpaceLength(const char* text, UINTN maxLength);
 void EditString(SMBIOS_STRUCTURE_POINTER table, SMBIOS_STRING* field, const char* buffer);
 
